@@ -231,8 +231,10 @@ def main():
     # Add obstacle legend
     obs_patch = mpatches.Patch(facecolor='#FF6B6B', edgecolor='#8B0000',
                                 linewidth=1.5, label='Obstacle', alpha=0.7)
-    axes[0].add_patch(mpatches.Patch(visible=False))  # spacer
-    fig.legend(handles=[obs_patch], loc='upper right', bbox_to_anchor=(1.0, 1.0))
+    for ax in axes:
+        ax.legend(handles=ax.get_legend_handles_labels()[0] + [obs_patch],
+                  labels=ax.get_legend_handles_labels()[1] + ['Obstacle'],
+                  loc='upper left', framealpha=0.9)
 
     plt.tight_layout()
     plt.savefig(args.save, bbox_inches='tight', dpi=150)
