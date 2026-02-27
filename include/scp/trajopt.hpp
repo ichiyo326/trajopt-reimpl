@@ -412,51 +412,53 @@ private:
         return result;
     }
 
-    // ---- Collision constraints as ConstraintFn objects ----
-    // These are re-built at every SQP iteration (re-linearization).
+// ---- Collision constraints as ConstraintFn objects ----
+// These are re-built at every SQP iteration (re-linearization).
 
-    std::vector<ConstraintFn> build_collision_constraints(
-        const Eigen::VectorXd& x, double /*mu*/) const
-    {
-        std::vector<ConstraintFn> ccs;
+std::vector<ConstraintFn> build_collision_constraints(
+    const Eigen::VectorXd& x, double /*mu*/) const
+{
+    std::vector<ConstraintFn> ccs;
 
-        for (int t = 0; t < T_; ++t) {
-            Eigen::VectorXd q = q_at(x, t);
-            auto cd = checker_.check(q, params_.d_check);
-            auto lc = linearize_collisions(arm_, q, cd, params_.d_safe);
+    for (int t = 0; t < T_; ++t) {
+        Eigen::VectorXd q_lin = q_at(x, t);                 // ★線形化点 q0
+        auto cd = checker_.check(q_lin, params_.d_check);
+        auto lc = linearize_collisions(arm_, q_lin, cd, params_.d_safe);
 
-            for (const auto& l : lc) {
-                // Capture gradient and sd_0 by value for the lambda
-                Eigen::VectorXd g = l.gradient;    // size K_
-                double sd0 = l.sd_0;
-                double dsafe = l.d_safe;
-                int t_cap = t;
-                int K = K_;
-                int n = n_vars_;
+        for (const auto& l : lc) {
+            // Capture by value
+            Eigen::VectorXd g = l.gradient;                 // size K_
+            double sd0   = l.sd_0;
+            double dsafe = l.d_safe;
 
-                ccs.push_back(ConstraintFn{
-                    ConstraintFn::INEQUALITY,
-                    "collision_t" + std::to_string(t),
-                    // g(x) = dsafe - (sd0 + g^T * dq) <= 0
-                    // where dq = q(t) - q0(t)
-                    [g, sd0, dsafe, t_cap, K, n](const Eigen::VectorXd& x_new) -> Eigen::VectorXd {
-                        // This is already linearized, so value is constant
-                        // (the Jacobian does the heavy lifting)
-                        return Eigen::VectorXd::Constant(1, std::max(dsafe - sd0, 0.0));
-                    },
-                    [g, t_cap, K, n](const Eigen::VectorXd&) -> Eigen::MatrixXd {
-                        // Jacobian: -g^T placed at the t-th block
-                        Eigen::MatrixXd J = Eigen::MatrixXd::Zero(1, n);
-                        J.block(0, t_cap*K, 1, K) = -g.transpose();
-                        return J;
-                    },
-                    1
-                });
-            }
+            int t_cap = t;
+            int K = K_;
+            int n = n_vars_;
+            Eigen::VectorXd q0 = q_lin;                     // ★q0 を保持
+
+            ccs.push_back(ConstraintFn{
+                ConstraintFn::INEQUALITY,
+                "collision_t" + std::to_string(t) + "_link" + std::to_string(lc.size()),
+                // g(x) = d_safe - (sd0 + g^T (q - q0)) <= 0
+                [g, sd0, dsafe, q0, t_cap, K, n](const Eigen::VectorXd& x_new) -> Eigen::VectorXd {
+                    Eigen::VectorXd q = x_new.segment(t_cap * K, K);
+                    double sd_lin = sd0 + g.dot(q - q0);
+                    double val = dsafe - sd_lin;            // violated if > 0
+                    return Eigen::VectorXd::Constant(1, val);
+                },
+                // Jacobian: d/dx [d_safe - (sd0 + g^T(q - q0))] = -g^T on the block
+                [g, t_cap, K, n](const Eigen::VectorXd&) -> Eigen::MatrixXd {
+                    Eigen::MatrixXd J = Eigen::MatrixXd::Zero(1, n);
+                    J.block(0, t_cap * K, 1, K) = -g.transpose();
+                    return J;
+                },
+                1
+            });
         }
-
-        return ccs;
     }
+
+    return ccs;
+}
 
     // ---- Merit function ----
     double evaluate_merit(const Eigen::VectorXd& x,

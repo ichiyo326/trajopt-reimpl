@@ -2,173 +2,121 @@
 """
 visualize.py - Trajectory Optimization Visualization
 
-Reads the trajectory_data.json output from arm_2d_demo and produces:
-  1. Side-by-side comparison: initial trajectory vs optimized trajectory
-  2. Animated GIF of the optimized arm motion
-  3. Signed distance plot over the optimization (if available)
-
 Usage:
-    python3 visualize.py [trajectory_data.json]
-    python3 visualize.py --demo   # generate synthetic demo data without running C++
+    python3 visualize.py --demo
+    python3 visualize.py trajectory_data.json
 """
 
-import json
-import sys
-import math
-import argparse
+import json, sys, math, argparse
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.animation import FuncAnimation, PillowWriter
-from matplotlib.patches import FancyArrowPatch
-import matplotlib.patheffects as pe
 
 matplotlib.rcParams.update({
     'font.family': 'sans-serif',
     'font.size': 11,
     'axes.titlesize': 13,
-    'axes.labelsize': 11,
     'figure.dpi': 120,
 })
 
-# ============================================================
-# Forward kinematics (2D, planar arm)
-# ============================================================
+# ── Forward kinematics ──────────────────────────────────────────────────────
 
 def fk_2d(q, link_lengths):
-    """
-    Returns list of (x, y) joint positions for a planar robot arm.
-    q: list of joint angles [rad]
-    link_lengths: list of link lengths [m]
-    """
     pts = [(0.0, 0.0)]
-    angle = 0.0
-    x, y = 0.0, 0.0
-    for i, (qi, L) in enumerate(zip(q, link_lengths)):
+    angle = 0.0; x = y = 0.0
+    for qi, L in zip(q, link_lengths):
         angle += qi
         x += L * math.cos(angle)
         y += L * math.sin(angle)
         pts.append((x, y))
     return pts
 
+# ── Drawing helpers ─────────────────────────────────────────────────────────
 
-# ============================================================
-# Drawing helpers
-# ============================================================
-
-def draw_arm(ax, q, link_lengths, color='royalblue', alpha=1.0,
-             lw=3, label=None, zorder=5):
-    pts = fk_2d(q, link_lengths)
+def draw_arm(ax, q, ll, color='royalblue', alpha=1.0, lw=3, label=None, zorder=5):
+    pts = fk_2d(q, ll)
     xs, ys = zip(*pts)
-    line, = ax.plot(xs, ys, '-o', color=color, linewidth=lw,
-                    markersize=6, alpha=alpha, label=label, zorder=zorder,
-                    solid_capstyle='round', solid_joinstyle='round')
-    # End-effector marker
-    ax.plot(xs[-1], ys[-1], '*', color=color, markersize=14,
-            alpha=alpha, zorder=zorder+1)
-    return line
+    ax.plot(xs, ys, '-o', color=color, lw=lw, markersize=6,
+            alpha=alpha, label=label, zorder=zorder,
+            solid_capstyle='round', solid_joinstyle='round')
+    ax.plot(xs[-1], ys[-1], '*', color=color, markersize=14, alpha=alpha, zorder=zorder+1)
 
+def draw_ghosts(ax, traj, ll, color, n=7):
+    idxs = np.linspace(0, len(traj)-1, n, dtype=int)
+    for k, idx in enumerate(idxs):
+        alpha = 0.08 + 0.22 * (k / max(n-1, 1))
+        draw_arm(ax, traj[idx], ll, color=color, alpha=alpha, lw=1.5, zorder=3)
 
-def draw_trajectory_ghost(ax, traj, link_lengths, color='skyblue', n_ghosts=5):
-    """Draw faded 'ghost' arm poses to visualize the trajectory arc."""
-    indices = np.linspace(0, len(traj)-1, n_ghosts, dtype=int)
-    for i, idx in enumerate(indices):
-        alpha = 0.1 + 0.25 * (i / len(indices))
-        draw_arm(ax, traj[idx], link_lengths, color=color, alpha=alpha, lw=1.5)
-
-
-def draw_obstacles(ax, boxes, spheres):
-    for (bmin, bmax) in boxes:
-        w, h = bmax[0]-bmin[0], bmax[1]-bmin[1]
-        rect = mpatches.FancyBboxPatch(
-            (bmin[0], bmin[1]), w, h,
-            boxstyle="round,pad=0.02",
-            linewidth=1.5, edgecolor='#8B0000', facecolor='#FF6B6B', alpha=0.7,
-            zorder=3
-        )
-        ax.add_patch(rect)
-
+def draw_obstacles(ax, spheres):
     for (cx, cy, r) in spheres:
-        circle = mpatches.Circle((cx, cy), r,
-                                  linewidth=1.5, edgecolor='#8B0000',
-                                  facecolor='#FF6B6B', alpha=0.7, zorder=3)
-        ax.add_patch(circle)
+        c = mpatches.Circle((cx, cy), r,
+                             lw=1.5, edgecolor='#8B0000',
+                             facecolor='#FF6B6B', alpha=0.75, zorder=4)
+        ax.add_patch(c)
 
-
-def setup_ax(ax, title, xlim=(-0.5, 3.2), ylim=(-1.5, 1.8)):
-    ax.set_xlim(*xlim)
-    ax.set_ylim(*ylim)
+def setup_ax(ax, title, xlim=(-0.3, 3.3), ylim=(-2.0, 2.0)):
+    ax.set_xlim(*xlim); ax.set_ylim(*ylim)
     ax.set_aspect('equal')
     ax.set_title(title, fontweight='bold', pad=8)
-    ax.set_xlabel('x [m]')
-    ax.set_ylabel('y [m]')
+    ax.set_xlabel('x [m]'); ax.set_ylabel('y [m]')
     ax.grid(True, alpha=0.25, linestyle='--')
-    ax.axhline(0, color='gray', linewidth=0.5, alpha=0.5)
-    ax.axvline(0, color='gray', linewidth=0.5, alpha=0.5)
-    # Base
+    ax.axhline(0, color='gray', lw=0.5, alpha=0.4)
+    ax.axvline(0, color='gray', lw=0.5, alpha=0.4)
     ax.plot(0, 0, 's', color='#333333', markersize=12, zorder=10)
 
-
-# ============================================================
-# Synthetic demo data (when C++ binary not available)
-# ============================================================
+# ── Demo data ────────────────────────────────────────────────────────────────
 
 def generate_demo_data():
-    """Generate synthetic trajectory data for demo/testing."""
+    """
+    Scenario: 3-link arm, single sphere obstacle at (1.5, 0) r=0.35.
+    Start EE ~ (2.4, -1.8), Goal EE ~ (2.8, 1.1).
+    Init trajectory goes THROUGH the sphere.
+    Optimized trajectory swings UP and around.
+    All waypoints verified collision-free by FK computation.
+    """
+    ll = [1.0, 1.0, 1.0]
+    q_start = np.array([-0.50, -0.30,  0.20])
+    q_goal  = np.array([ 0.50, -0.30,  0.20])
     T = 11
-    link_lengths = [1.0, 1.0, 1.0]
 
-    # Start: arm pointing up-left
-    q_start = np.array([-0.3, 0.4, 0.3])
-    # Goal: arm folded to the right
-    q_goal  = np.array([0.1, -0.5, -0.2])
+    # Initial: linear interpolation (passes through sphere at t=4..8)
+    init_traj = [(1 - t/(T-1))*q_start + (t/(T-1))*q_goal for t in range(T)]
 
-    # Initial: linear interpolation (goes through obstacles)
-    init_traj = [(1 - t/(T-1)) * q_start + (t/(T-1)) * q_goal for t in range(T)]
-
-    # Optimized: arc around obstacles (hand-crafted for demo)
-    opt_traj = []
-    for t in range(T):
-        alpha = t / (T - 1)
-        q_mid = np.array([0.0, 0.8, -0.5])  # detour via high pose
-        if alpha < 0.5:
-            q = (1 - 2*alpha) * q_start + 2*alpha * q_mid
-        else:
-            q = (1 - 2*(alpha-0.5)) * q_mid + 2*(alpha-0.5) * q_goal
-        opt_traj.append(q)
-
-    boxes = [
-        [0.5, 0.3, 1.2, 0.8],
-        [0.5, -0.8, 1.2, -0.3],
+    # Optimized: swings arm UP and over the sphere
+    # Each waypoint verified: all link segments avoid sphere(1.5,0,r=0.35)
+    opt_traj = [
+        np.array([-0.50, -0.30,  0.20]),   # t=0  start
+        np.array([ 0.20,  0.50,  0.10]),   # t=1  rising
+        np.array([ 0.60,  0.60,  0.00]),   # t=2  sweeping up-right
+        np.array([ 0.80,  0.55, -0.10]),   # t=3
+        np.array([ 0.90,  0.40, -0.15]),   # t=4  peak
+        np.array([ 0.85,  0.20, -0.15]),   # t=5  descending
+        np.array([ 0.75,  0.00, -0.15]),   # t=6
+        np.array([ 0.65, -0.15,  0.00]),   # t=7
+        np.array([ 0.58, -0.25,  0.10]),   # t=8
+        np.array([ 0.53, -0.28,  0.15]),   # t=9
+        np.array([ 0.50, -0.30,  0.20]),   # t=10 goal
     ]
-    spheres = [[1.8, 0.0, 0.25]]
 
     return {
-        "link_lengths": link_lengths,
+        "link_lengths": ll,
         "init_trajectory": [q.tolist() for q in init_traj],
-        "opt_trajectory": [q.tolist() for q in opt_traj],
-        "boxes": boxes,
-        "spheres": spheres,
+        "opt_trajectory":  [q.tolist() for q in opt_traj],
+        "spheres": [[1.5, 0.0, 0.35]],
     }
 
-
-# ============================================================
-# Main visualization
-# ============================================================
+# ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description='TrajOpt trajectory visualizer')
+    parser = argparse.ArgumentParser()
     parser.add_argument('data_file', nargs='?', default='trajectory_data.json')
-    parser.add_argument('--demo', action='store_true',
-                        help='Use synthetic demo data (no C++ binary needed)')
-    parser.add_argument('--save', default='trajopt_result.png',
-                        help='Save static figure to file')
-    parser.add_argument('--anim', default='trajopt_animation.gif',
-                        help='Save animation GIF to file')
+    parser.add_argument('--demo', action='store_true')
+    parser.add_argument('--save', default='trajopt_result.png')
+    parser.add_argument('--anim', default='trajopt_animation.gif')
     args = parser.parse_args()
 
-    # Load data
     if args.demo:
         print("[Viz] Using synthetic demo data.")
         data = generate_demo_data()
@@ -176,146 +124,111 @@ def main():
         try:
             with open(args.data_file) as f:
                 data = json.load(f)
-            print(f"[Viz] Loaded data from {args.data_file}")
+            print("[Viz] Loaded", args.data_file)
         except FileNotFoundError:
-            print(f"[Viz] '{args.data_file}' not found. Using demo data.")
+            print("[Viz] File not found. Using demo data.")
             data = generate_demo_data()
 
-    link_lengths = data['link_lengths']
-    init_traj = [np.array(q) for q in data['init_trajectory']]
-    opt_traj  = [np.array(q) for q in data['opt_trajectory']]
-    boxes   = [((b[0], b[1], -0.1), (b[2], b[3], 0.1)) for b in data['boxes']]
-    spheres = [(s[0], s[1], s[2]) for s in data['spheres']]
-
+    ll         = data['link_lengths']
+    init_traj  = [np.array(q) for q in data['init_trajectory']]
+    opt_traj   = [np.array(q) for q in data['opt_trajectory']]
+    spheres    = data.get('spheres', [])
     T = len(opt_traj)
 
-    # ============================================================
-    # Figure 1: Side-by-side static comparison
-    # ============================================================
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-    fig.suptitle('TrajOpt: Sequential Convex Programming for Motion Planning\n'
-                 '(Schulman et al., IJRR 2014 — Reimplementation)',
-                 fontsize=12, fontweight='bold', y=1.01)
+    # ── Figure 1: side-by-side comparison ────────────────────────────────────
+    fig, axes = plt.subplots(1, 2, figsize=(14, 7))
+    fig.suptitle(
+        'TrajOpt: Sequential Convex Programming for Motion Planning\n'
+        '(Schulman et al., IJRR 2014 — Reimplementation)',
+        fontsize=12, fontweight='bold', y=1.01)
 
-    # --- Left: initial trajectory ---
+    obs_patch = mpatches.Patch(facecolor='#FF6B6B', edgecolor='#8B0000',
+                                lw=1.5, label='Obstacle', alpha=0.75)
+
+    # Left: initial (in collision)
     ax = axes[0]
     setup_ax(ax, 'Initial Trajectory (straight-line, in collision)')
-    boxes_2d = [((b[0][0], b[0][1]), (b[1][0], b[1][1])) for b in boxes]
-    spheres_2d = spheres
-    draw_obstacles(ax, boxes_2d, spheres_2d)
-    draw_trajectory_ghost(ax, init_traj, link_lengths, color='#FF4444', n_ghosts=7)
-    draw_arm(ax, init_traj[0], link_lengths, color='green', label='Start', lw=3)
-    draw_arm(ax, init_traj[-1], link_lengths, color='darkorange', label='Goal', lw=3)
-
-    # Annotate collision
+    draw_obstacles(ax, spheres)
+    draw_ghosts(ax, init_traj, ll, color='#FF4444')
+    draw_arm(ax, init_traj[0],  ll, color='green',      label='Start', lw=3)
+    draw_arm(ax, init_traj[-1], ll, color='darkorange',  label='Goal',  lw=3)
     ax.text(0.98, 0.02, '⚠ Trajectory in collision',
             transform=ax.transAxes, ha='right', va='bottom',
             color='#CC0000', fontsize=10, fontweight='bold',
-            bbox=dict(boxstyle='round', facecolor='#FFE0E0', alpha=0.8))
-    ax.legend(loc='upper left', framealpha=0.9)
+            bbox=dict(boxstyle='round', facecolor='#FFE0E0', alpha=0.85))
+    h, l = ax.get_legend_handles_labels()
+    ax.legend(h + [obs_patch], l + ['Obstacle'], loc='upper left', framealpha=0.9)
 
-    # --- Right: optimized trajectory ---
+    # Right: optimized (collision-free)
     ax = axes[1]
     setup_ax(ax, 'Optimized Trajectory (TrajOpt, collision-free)')
-    draw_obstacles(ax, boxes_2d, spheres_2d)
-    draw_trajectory_ghost(ax, opt_traj, link_lengths, color='royalblue', n_ghosts=7)
-    draw_arm(ax, opt_traj[0], link_lengths, color='green', label='Start', lw=3)
-    draw_arm(ax, opt_traj[-1], link_lengths, color='darkorange', label='Goal', lw=3)
-
+    draw_obstacles(ax, spheres)
+    draw_ghosts(ax, opt_traj, ll, color='royalblue')
+    draw_arm(ax, opt_traj[0],  ll, color='green',      label='Start', lw=3)
+    draw_arm(ax, opt_traj[-1], ll, color='darkorange',  label='Goal',  lw=3)
     ax.text(0.98, 0.02, '✓ Collision-free',
             transform=ax.transAxes, ha='right', va='bottom',
             color='#005500', fontsize=10, fontweight='bold',
-            bbox=dict(boxstyle='round', facecolor='#E0FFE0', alpha=0.8))
-    ax.legend(loc='upper left', framealpha=0.9)
-
-    # Add obstacle legend
-    obs_patch = mpatches.Patch(facecolor='#FF6B6B', edgecolor='#8B0000',
-                                linewidth=1.5, label='Obstacle', alpha=0.7)
-    for ax in axes:
-        ax.legend(handles=ax.get_legend_handles_labels()[0] + [obs_patch],
-                  labels=ax.get_legend_handles_labels()[1] + ['Obstacle'],
-                  loc='upper left', framealpha=0.9)
+            bbox=dict(boxstyle='round', facecolor='#E0FFE0', alpha=0.85))
+    h, l = ax.get_legend_handles_labels()
+    ax.legend(h + [obs_patch], l + ['Obstacle'], loc='upper left', framealpha=0.9)
 
     plt.tight_layout()
     plt.savefig(args.save, bbox_inches='tight', dpi=150)
-    print(f"[Viz] Saved static figure to {args.save}")
+    print("[Viz] Saved", args.save)
     plt.show(block=False)
 
-    # ============================================================
-    # Figure 2: Optimized trajectory animation
-    # ============================================================
+    # ── Figure 2: animation ───────────────────────────────────────────────────
     fig2, ax2 = plt.subplots(figsize=(7, 7))
     setup_ax(ax2, 'TrajOpt Optimized Trajectory — Animation')
-    draw_obstacles(ax2, boxes_2d, spheres_2d)
-    draw_trajectory_ghost(ax2, opt_traj, link_lengths, color='lightblue', n_ghosts=T)
+    draw_obstacles(ax2, spheres)
+    draw_ghosts(ax2, opt_traj, ll, color='lightblue', n=T)
+    draw_arm(ax2, opt_traj[0],  ll, color='green',     alpha=0.4, lw=2, zorder=3)
+    draw_arm(ax2, opt_traj[-1], ll, color='darkorange', alpha=0.4, lw=2, zorder=3)
 
-    arm_line, = ax2.plot([], [], '-o', color='royalblue', linewidth=4,
+    arm_line, = ax2.plot([], [], '-o', color='royalblue', lw=4,
                           markersize=8, solid_capstyle='round', zorder=6)
-    ee_marker, = ax2.plot([], [], '*', color='royalblue', markersize=16, zorder=7)
-
-    start_pts = fk_2d(opt_traj[0], link_lengths)
-    goal_pts  = fk_2d(opt_traj[-1], link_lengths)
-    ax2.plot(*zip(*start_pts), '-o', color='green', linewidth=2, alpha=0.5, zorder=4)
-    ax2.plot(*zip(*goal_pts),  '-o', color='darkorange', linewidth=2, alpha=0.5, zorder=4)
-
+    ee_star,  = ax2.plot([], [], '*', color='royalblue', markersize=16, zorder=7)
     time_text = ax2.text(0.02, 0.96, '', transform=ax2.transAxes,
                           fontsize=11, va='top', fontweight='bold',
-                          bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                          bbox=dict(boxstyle='round', facecolor='white', alpha=0.85))
 
     def animate(frame):
         t = frame % T
-        pts = fk_2d(opt_traj[t], link_lengths)
+        pts = fk_2d(opt_traj[t], ll)
         xs, ys = zip(*pts)
         arm_line.set_data(xs, ys)
-        ee_marker.set_data([xs[-1]], [ys[-1]])
-        time_text.set_text(f'Timestep: {t+1}/{T}')
-        return arm_line, ee_marker, time_text
+        ee_star.set_data([xs[-1]], [ys[-1]])
+        time_text.set_text('Timestep: %d/%d' % (t+1, T))
+        return arm_line, ee_star, time_text
 
     anim = FuncAnimation(fig2, animate, frames=T*3, interval=200, blit=True)
-
     try:
-        writer = PillowWriter(fps=5)
-        anim.save(args.anim, writer=writer)
-        print(f"[Viz] Saved animation to {args.anim}")
+        anim.save(args.anim, writer=PillowWriter(fps=5))
+        print("[Viz] Saved", args.anim)
     except Exception as e:
-        print(f"[Viz] Could not save GIF: {e}")
+        print("[Viz] GIF save failed:", e)
 
     plt.tight_layout()
     plt.show()
 
-    # ============================================================
-    # Figure 3: Joint angle trajectories
-    # ============================================================
+    # ── Figure 3: joint angles ────────────────────────────────────────────────
     fig3, axes3 = plt.subplots(3, 1, figsize=(10, 7), sharex=True)
     fig3.suptitle('Joint Angle Trajectories', fontweight='bold')
-    timesteps = np.arange(T)
-
+    ts = np.arange(T)
     for k in range(3):
         ax = axes3[k]
-        init_vals = [q[k] for q in init_traj]
-        opt_vals  = [q[k] for q in opt_traj]
-
-        ax.plot(timesteps, np.degrees(init_vals), '--', color='#FF4444',
-                label='Initial', linewidth=2, alpha=0.7)
-        ax.plot(timesteps, np.degrees(opt_vals),  '-',  color='royalblue',
-                label='Optimized', linewidth=2.5)
-
-        ax.set_ylabel(f'Joint {k+1} [deg]')
-        ax.grid(True, alpha=0.3)
-        ax.legend(loc='upper right', fontsize=9)
-        ax.axhline(0, color='gray', linewidth=0.5, alpha=0.5)
-
+        ax.plot(ts, np.degrees([q[k] for q in init_traj]),
+                '--', color='#FF4444', lw=2, alpha=0.7, label='Initial')
+        ax.plot(ts, np.degrees([q[k] for q in opt_traj]),
+                '-',  color='royalblue', lw=2.5, label='Optimized')
+        ax.set_ylabel('Joint %d [deg]' % (k+1))
+        ax.grid(True, alpha=0.3); ax.legend(loc='upper right', fontsize=9)
     axes3[-1].set_xlabel('Timestep')
     plt.tight_layout()
     plt.savefig('joint_trajectories.png', bbox_inches='tight', dpi=150)
-    print("[Viz] Saved joint trajectories to joint_trajectories.png")
+    print("[Viz] Saved joint_trajectories.png")
     plt.show()
-
-    print("\n[Viz] Done. Files written:")
-    print(f"  - {args.save}")
-    print(f"  - {args.anim}")
-    print("  - joint_trajectories.png")
-
 
 if __name__ == '__main__':
     main()
